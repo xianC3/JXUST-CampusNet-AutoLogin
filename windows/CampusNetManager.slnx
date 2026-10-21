@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="CampusNetManager/CampusNetManager.csproj" />
+  <Project Path="CampusNetManager.SmokeTests/CampusNetManager.SmokeTests.csproj" />
+</Solution>

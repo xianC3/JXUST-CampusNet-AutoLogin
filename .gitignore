@@ -1,0 +1,30 @@
+# Android
+android/.gradle/
+android/local.properties
+android/**/build/
+*.apk
+*.aab
+*.apk.idsig
+*.jks
+*.keystore
+
+# Visual Studio / .NET
+windows/.vs/
+windows/**/bin/
+windows/**/obj/
+windows/publish/
+windows/dist/
+*.user
+*.suo
+
+# Runtime data and personal configuration
+trusted-macs.txt
+config.json
+credential.dat
+campusnet.log
+.campusnet-manager/
+
+# Operating system
+.DS_Store
+Thumbs.db
+Desktop.ini
