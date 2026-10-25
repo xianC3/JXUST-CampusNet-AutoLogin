@@ -1,5 +1,7 @@
 package com.chxyi.campusnet;
 
+import android.content.Context;
+import android.net.ConnectivityManager;
 import android.net.Network;
 
 import java.io.InputStream;
@@ -14,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 
 final class InternetChecker {
     private static final String[] ENDPOINTS = {
-            "https://www.baidu.com",
+            "https://www.baidu.com/robots.txt",
             "http://connect.rom.miui.com/generate_204",
             "http://www.msftconnecttest.com/connecttest.txt",
             "http://captive.apple.com/hotspot-detect.html"
@@ -23,7 +25,15 @@ final class InternetChecker {
     private InternetChecker() {
     }
 
-    static boolean isAvailable(Network network) {
+    static boolean isAvailable(Context context, Network network) {
+        boolean available = probe(network);
+        if (available) {
+            reportConnectivity(context, network, true);
+        }
+        return available;
+    }
+
+    private static boolean probe(Network network) {
         ExecutorService executor = Executors.newFixedThreadPool(
                 ENDPOINTS.length);
         CompletionService<Boolean> completion =
@@ -76,6 +86,9 @@ final class InternetChecker {
             if (urlText.contains("captive.apple.com")) {
                 return readText(connection).contains("Success");
             }
+            if (urlText.contains("baidu.com")) {
+                return readText(connection).contains("User-agent");
+            }
             return true;
         } catch (Exception ignored) {
             return false;
@@ -83,6 +96,22 @@ final class InternetChecker {
             if (connection != null) {
                 connection.disconnect();
             }
+        }
+    }
+
+    private static void reportConnectivity(
+            Context context,
+            Network network,
+            boolean available
+    ) {
+        try {
+            ConnectivityManager manager =
+                    (ConnectivityManager) context.getSystemService(
+                            Context.CONNECTIVITY_SERVICE);
+            if (manager != null) {
+                manager.reportNetworkConnectivity(network, available);
+            }
+        } catch (Exception ignored) {
         }
     }
 

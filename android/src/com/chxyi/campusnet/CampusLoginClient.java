@@ -98,6 +98,17 @@ final class CampusLoginClient {
             // A known campus SSID can continue even if status is temporarily unavailable.
         }
 
+        if (status == null && ssidKnown && isCampusSsid(ssid)) {
+            if (InternetChecker.isAvailable(context, wifiNetwork)) {
+                return new Result(
+                        true,
+                        false,
+                        "外网可用；校园门户状态接口暂时异常",
+                        ssid
+                );
+            }
+        }
+
         if (!ssidKnown && !portalRecognized) {
             return new Result(
                     false,
@@ -111,7 +122,7 @@ final class CampusLoginClient {
         if (portalRecognized && isOnline(status)) {
             String onlineUid = status.optString("uid", loginAccount);
             rememberMac(status.optString("olmac", ""));
-            if (!InternetChecker.isAvailable(wifiNetwork)) {
+            if (!InternetChecker.isAvailable(context, wifiNetwork)) {
                 return new Result(
                         false,
                         false,
@@ -144,7 +155,7 @@ final class CampusLoginClient {
                     wifiNetwork
             );
             if (isLoginSuccess(login)) {
-                if (!InternetChecker.isAvailable(wifiNetwork)) {
+                if (!InternetChecker.isAvailable(context, wifiNetwork)) {
                     return new Result(
                             false,
                             false,
@@ -160,7 +171,7 @@ final class CampusLoginClient {
             }
 
             String message = login.optString("msg", "门户拒绝了登录请求");
-            if (isDeviceLimit(login)) {
+            if (PortalMessageMatcher.isDeviceLimit(message)) {
                 SelfServiceClient.CleanupResult cleanup =
                         SelfServiceClient.cleanupOwnSessions(
                                 AppConfig.SELF_SERVICE_BASE,
@@ -183,7 +194,7 @@ final class CampusLoginClient {
                             wifiNetwork
                     );
                     if (isLoginSuccess(retry)) {
-                        if (!InternetChecker.isAvailable(wifiNetwork)) {
+                        if (!InternetChecker.isAvailable(context, wifiNetwork)) {
                             return new Result(
                                     false,
                                     false,
@@ -204,8 +215,33 @@ final class CampusLoginClient {
                     message = cleanup.message;
                 }
             }
+            if (PortalMessageMatcher.isTransientBusy(message)) {
+                if (InternetChecker.isAvailable(context, wifiNetwork)) {
+                    return new Result(
+                            true,
+                            false,
+                            "外网可用；校园门户暂时繁忙",
+                            ssid
+                    );
+                }
+                return new Result(
+                        false,
+                        false,
+                        "校园门户系统忙，正在自动重试",
+                        ssid,
+                        true
+                );
+            }
             return new Result(false, false, message, ssid);
         } catch (Exception e) {
+            if (InternetChecker.isAvailable(context, wifiNetwork)) {
+                return new Result(
+                        true,
+                        false,
+                        "外网可用；校园门户请求暂时失败",
+                        ssid
+                );
+            }
             return new Result(
                     false,
                     false,
@@ -227,18 +263,6 @@ final class CampusLoginClient {
                 ("1".equals(result.optString("result")) ||
                         "ok".equals(result.optString("result")) ||
                         "2".equals(result.optString("ret_code")));
-    }
-
-    private boolean isDeviceLimit(JSONObject login) {
-        String message = login.optString("msg", "");
-        return message.contains("设备数") ||
-                message.contains("终端数") ||
-                message.contains("在线数") ||
-                message.contains("达到上限") ||
-                message.contains("已达上限") ||
-                message.contains("超过限制") ||
-                message.contains("不允许重复登录") ||
-                message.contains("终端在线数量");
     }
 
     private boolean isCampusSsid(String ssid) {
