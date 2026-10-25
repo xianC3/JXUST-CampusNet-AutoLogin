@@ -33,6 +33,35 @@ final class CleanupPlanner {
             Set<String> trustedMacs,
             boolean personalMode
     ) {
+        String normalizedCurrent = normalizeMac(currentMac);
+        boolean currentPresent = false;
+        Session oldestSession = null;
+        for (Session session : sessions) {
+            if (session.sessionId == null || session.sessionId.isEmpty() ||
+                    session.mac == null || session.mac.isEmpty()) {
+                continue;
+            }
+            if (isPlausibleMac(normalizedCurrent) &&
+                    normalizeMac(session.mac).equals(normalizedCurrent)) {
+                currentPresent = true;
+            }
+            if (oldestSession == null ||
+                    session.loginTime < oldestSession.loginTime ||
+                    (session.loginTime == oldestSession.loginTime &&
+                            session.index < oldestSession.index)) {
+                oldestSession = session;
+            }
+        }
+        if (!currentPresent) {
+            Set<String> fallback = new LinkedHashSet<>();
+            if (oldestSession != null &&
+                    oldestSession.sessionId != null &&
+                    !oldestSession.sessionId.isEmpty()) {
+                fallback.add(oldestSession.sessionId);
+            }
+            return fallback;
+        }
+
         Map<String, List<Session>> byMac = new LinkedHashMap<>();
         for (Session session : sessions) {
             if (session.sessionId == null || session.sessionId.isEmpty() ||
@@ -66,7 +95,7 @@ final class CleanupPlanner {
                 }
             }
         }
-        known.add(currentMac);
+        known.add(normalizedCurrent);
 
         if (personalMode) {
             for (Session session : sessions) {

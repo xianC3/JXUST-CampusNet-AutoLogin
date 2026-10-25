@@ -12,6 +12,8 @@ public final class CleanupPlannerTest {
         personalRemovesUnknownAndDuplicate();
         personalKeepsOtherOwnedDevice();
         duplicateRemovesOnlyOlderLogin();
+        missingCurrentRemovesOldest();
+        emptyCurrentRemovesOldest();
         System.out.println("RESULT all cleanup planner tests passed");
     }
 
@@ -71,6 +73,34 @@ public final class CleanupPlannerTest {
                 false
         );
         check(removals.equals(set("56")), "duplicate old account");
+    }
+
+    private static void missingCurrentRemovesOldest() {
+        List<CleanupPlanner.Session> sessions = Arrays.asList(
+                session("55", "AABBCCDDEEFF", 300),
+                session("99", "112233445566", 100)
+        );
+        Set<String> removals = CleanupPlanner.select(
+                sessions,
+                "DDEEFF001122",
+                set("AABBCCDDEEFF", "112233445566"),
+                false
+        );
+        check(removals.equals(set("99")), "missing current removes oldest");
+    }
+
+    private static void emptyCurrentRemovesOldest() {
+        List<CleanupPlanner.Session> sessions = Arrays.asList(
+                session("55", "AABBCCDDEEFF", 300),
+                session("99", "112233445566", 100)
+        );
+        Set<String> removals = CleanupPlanner.select(
+                sessions,
+                "",
+                set("AABBCCDDEEFF", "112233445566"),
+                false
+        );
+        check(removals.equals(set("99")), "empty current removes oldest");
     }
 
     private static CleanupPlanner.Session session(

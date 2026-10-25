@@ -194,7 +194,12 @@ Check(
     $"注销={string.Join(",", server.OfflineCalls)}"
 );
 
-var loginCount = server.LoginCount;
+server.Sessions.Clear();
+server.Sessions.Add(new MockSession(
+    "AABBCCDDEEFF", "55", "2026-10-21 12:20:00"));
+server.Sessions.Add(new MockSession(
+    "112233445566", "99", "2026-10-21 12:10:00"));
+server.OfflineCalls.Clear();
 var missingMac = await SelfServiceClient.CleanupOwnSessionsAsync(
     "2026000001",
     "test-password",
@@ -203,10 +208,12 @@ var missingMac = await SelfServiceClient.CleanupOwnSessionsAsync(
     baseUrl: server.BaseUrl
 );
 Check(
-    "缺少 MAC 时停止",
-    !missingMac.LoggedIn &&
-    server.LoginCount == loginCount,
-    "未尝试登录自助服务"
+    "完全缺少 MAC 时注销最旧会话",
+    missingMac.LoggedIn &&
+    missingMac.RemovedSessions == 1 &&
+    !missingMac.MatchedDevice &&
+    server.OfflineCalls.SequenceEqual(new[] { "99" }),
+    $"注销={string.Join(",", server.OfflineCalls)}"
 );
 
 using var portal = new MockPortalServer(server);

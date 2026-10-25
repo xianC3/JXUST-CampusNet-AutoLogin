@@ -87,15 +87,6 @@ public sealed class SelfServiceClient
         CancellationToken cancellationToken = default)
     {
         var normalizedMac = NormalizeMac(deviceMac);
-        if (!IsPlausibleMac(normalizedMac))
-        {
-            return new CleanupResult(
-                false,
-                false,
-                0,
-                "设备数已达上限，但未取得本机确切的 Wi-Fi MAC；未注销任何设备"
-            );
-        }
         if (string.IsNullOrWhiteSpace(localAccount) ||
             string.IsNullOrEmpty(password))
         {
@@ -154,47 +145,76 @@ public sealed class SelfServiceClient
             }
 
             var sessions = ParseSessions(listDocument.RootElement);
+            var currentDeviceFound = sessions.Any(
+                item => IsPlausibleMac(normalizedMac) &&
+                        string.Equals(
+                            item.Mac,
+                            normalizedMac,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+            );
             var knownMacs = new HashSet<string>(
                 (trustedMacs ?? Array.Empty<string>())
                     .Select(NormalizeMac)
                     .Where(IsPlausibleMac),
                 StringComparer.OrdinalIgnoreCase
             );
-            knownMacs.Add(normalizedMac);
+            if (IsPlausibleMac(normalizedMac))
+            {
+                knownMacs.Add(normalizedMac);
+            }
 
             var removals = new HashSet<string>(
                 StringComparer.OrdinalIgnoreCase
             );
 
-            // A device logged in with two accounts: keep only its newest session.
-            foreach (var group in sessions
-                         .Where(item => !string.IsNullOrWhiteSpace(item.SessionId))
-                         .GroupBy(item => item.Mac, StringComparer.OrdinalIgnoreCase))
+            if (currentDeviceFound)
             {
-                foreach (var duplicate in group
-                             .OrderByDescending(item => item.LoginTime)
-                             .ThenByDescending(item => item.Index)
-                             .Skip(1))
+                // A device logged in with two accounts: keep only its newest session.
+                foreach (var group in sessions
+                             .Where(item => !string.IsNullOrWhiteSpace(item.SessionId))
+                             .GroupBy(item => item.Mac, StringComparer.OrdinalIgnoreCase))
                 {
-                    removals.Add(duplicate.SessionId);
+                    foreach (var duplicate in group
+                                 .OrderByDescending(item => item.LoginTime)
+                                 .ThenByDescending(item => item.Index)
+                                 .Skip(1))
+                    {
+                        removals.Add(duplicate.SessionId);
+                    }
                 }
-            }
 
-            if (personalMode)
-            {
-                // Personal build: remove unfamiliar devices, but never remove
-                // the other known owned device.
-                foreach (var session in sessions.Where(
-                             item => !knownMacs.Contains(item.Mac) &&
-                                     !string.IsNullOrWhiteSpace(item.SessionId)))
+                if (personalMode)
                 {
-                    removals.Add(session.SessionId);
+                    // Personal build: remove unfamiliar devices, but never remove
+                    // the other known owned device.
+                    foreach (var session in sessions.Where(
+                                 item => !knownMacs.Contains(item.Mac) &&
+                                         !string.IsNullOrWhiteSpace(item.SessionId)))
+                    {
+                        removals.Add(session.SessionId);
+                    }
+                }
+                else if (removals.Count == 0 && sessions.Count > 1)
+                {
+                    // Generic build: free exactly one slot and preserve one other
+                    // online device by removing only the oldest session.
+                    var oldest = sessions
+                        .Where(item => !string.IsNullOrWhiteSpace(item.SessionId))
+                        .OrderBy(item => item.LoginTime)
+                        .ThenBy(item => item.Index)
+                        .FirstOrDefault();
+                    if (oldest != null)
+                    {
+                        removals.Add(oldest.SessionId);
+                    }
                 }
             }
-            else if (removals.Count == 0 && sessions.Count > 1)
+            else
             {
-                // Generic build: free exactly one slot and preserve one other
-                // online device by removing only the oldest session.
+                // If this device's MAC is unavailable or absent from the list,
+                // free exactly one slot by removing the oldest registered session.
+                removals.Clear();
                 var oldest = sessions
                     .Where(item => !string.IsNullOrWhiteSpace(item.SessionId))
                     .OrderBy(item => item.LoginTime)
@@ -212,7 +232,9 @@ public sealed class SelfServiceClient
                     true,
                     false,
                     0,
-                    personalMode
+                    !currentDeviceFound
+                        ? "未找到本机 MAC，但在线列表中没有可注销的会话；未注销任何设备"
+                        : personalMode
                         ? "设备数已达上限，但没有发现陌生 MAC 或同设备重复会话；未注销任何设备"
                         : "设备数已达上限，但在线设备不足两台或没有可安全清理的旧会话；未注销任何设备"
                 );
@@ -255,17 +277,21 @@ public sealed class SelfServiceClient
             return removed > 0
                 ? new CleanupResult(
                     true,
-                    true,
+                    currentDeviceFound,
                     removed,
-                    personalMode
+                    !currentDeviceFound
+                        ? "未找到本机 MAC，已注销登录时间最早的在线会话"
+                        : personalMode
                         ? "已注销陌生 MAC 或同设备最旧的重复会话，保留受信任设备"
                         : "已注销最旧的旧会话，并保留另一台设备在线"
                 )
                 : new CleanupResult(
                     true,
-                    true,
+                    currentDeviceFound,
                     0,
-                    "找到可清理的旧会话，但自助服务拒绝注销"
+                    !currentDeviceFound
+                        ? "已选择最旧在线会话，但自助服务拒绝注销"
+                        : "找到可清理的旧会话，但自助服务拒绝注销"
                 );
         }
         catch

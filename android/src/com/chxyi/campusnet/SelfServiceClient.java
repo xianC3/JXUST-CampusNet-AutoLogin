@@ -69,14 +69,6 @@ final class SelfServiceClient {
             boolean personalMode
     ) {
         String normalizedMac = normalizeMac(deviceMac);
-        if (!isPlausibleMac(normalizedMac)) {
-            return new CleanupResult(
-                    false,
-                    false,
-                    0,
-                    "设备数已达上限，但未能取得本机 MAC，已停止注销操作；请打开应用后再试"
-            );
-        }
         if (account == null || account.trim().isEmpty() ||
                 password == null || password.isEmpty()) {
             return new CleanupResult(
@@ -115,6 +107,17 @@ final class SelfServiceClient {
             }
 
             JSONArray online = new JSONArray(listResponse.text);
+            boolean currentMacPresent = false;
+            for (int i = 0; i < online.length(); i++) {
+                JSONObject item = online.optJSONObject(i);
+                if (item != null &&
+                        isPlausibleMac(normalizedMac) &&
+                        normalizeMac(item.optString("mac", ""))
+                                .equals(normalizedMac)) {
+                    currentMacPresent = true;
+                    break;
+                }
+            }
             Set<String> matchingSessions = selectCleanupSessions(
                     online,
                     normalizedMac,
@@ -127,7 +130,9 @@ final class SelfServiceClient {
                         true,
                         false,
                         0,
-                        "设备数已达上限，但自助服务中没有找到与本机 MAC 完全一致的在线记录；未注销任何设备"
+                        currentMacPresent
+                                ? "设备数已达上限，但没有可安全注销的旧会话；未注销任何设备"
+                                : "未找到本机 MAC，但在线列表中没有可注销的会话；未注销任何设备"
                 );
             }
 
@@ -154,16 +159,20 @@ final class SelfServiceClient {
             if (removed > 0) {
                 return new CleanupResult(
                         true,
-                        true,
+                        currentMacPresent,
                         removed,
-                        "已注销自助服务中与本机 MAC 一致的旧登录记录"
+                        currentMacPresent
+                                ? "已注销自助服务中与本机 MAC 一致的旧登录记录"
+                                : "未找到本机 MAC，已注销登录时间最早的在线会话"
                 );
             }
             return new CleanupResult(
                     true,
-                    true,
+                    currentMacPresent,
                     0,
-                    "已找到本机 MAC 的旧记录，但自助服务拒绝注销"
+                    currentMacPresent
+                            ? "已找到可清理的旧会话，但自助服务拒绝注销"
+                            : "已选择最旧在线会话，但自助服务拒绝注销"
             );
         } catch (Exception e) {
             return new CleanupResult(

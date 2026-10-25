@@ -1,12 +1,12 @@
 ﻿#define MyAppName "江西理工大学校园网自动登录"
-#define MyAppVersion "1.4.3"
+#define MyAppVersion "1.4.4"
 
 [Setup]
 AppId={{B4D0B2E8-7F91-4F42-A7E9-1D7A0E5D47C1}
 AppName={#MyAppName}
 AppVerName={#MyAppName} {#MyAppVersion}
-VersionInfoVersion=1.4.3.0
-VersionInfoProductVersion=1.4.3
+VersionInfoVersion=1.4.4.0
+VersionInfoProductVersion=1.4.4
 DefaultDirName={autopf}\CampusNetManager
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
