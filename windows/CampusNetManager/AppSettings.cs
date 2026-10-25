@@ -11,6 +11,7 @@ public sealed class AppSettings
     public string SelfServiceBase { get; set; } =
         "http://10.16.11.11:60001/Self";
     public List<string> CampusSsids { get; set; } = new();
+    public bool AutoSwitchWifiEnabled { get; set; } = false;
     public bool AutoLoginEnabled { get; set; } = true;
     public string InterfaceName { get; set; } = "WLAN";
     public int RequestTimeoutSeconds { get; set; } = 8;

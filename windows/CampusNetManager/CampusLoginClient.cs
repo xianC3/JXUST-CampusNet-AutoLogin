@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -53,19 +54,47 @@ public sealed class CampusLoginClient
             var visibleCampus = NetworkService.FindVisibleCampusSsid(
                 _settings.CampusSsids
             );
-            if (allowWifiSwitch &&
-                !string.IsNullOrWhiteSpace(visibleCampus) &&
+            var campusVisible = !string.IsNullOrWhiteSpace(visibleCampus);
+            var currentInternetAvailable = false;
+            if (allowWifiSwitch && campusVisible)
+            {
+                var currentIp = NetworkService.GetWifiIpv4();
+                if (!string.IsNullOrWhiteSpace(currentIp))
+                {
+                    var currentInternet = await InternetProbe.CheckAsync(
+                        currentIp,
+                        _settings.RequestTimeoutSeconds,
+                        cancellationToken
+                    );
+                    currentInternetAvailable = currentInternet.Available;
+                }
+            }
+
+            if (WifiSwitchPolicy.ShouldSwitch(
+                    allowWifiSwitch,
+                    campusVisible,
+                    currentInternetAvailable) &&
                 !string.Equals(
                     visibleCampus,
                     ssid,
                     StringComparison.OrdinalIgnoreCase) &&
-                NetworkService.ConnectToWifi(visibleCampus))
+                NetworkService.ConnectToWifi(visibleCampus!))
             {
                 return new LoginResult(
                     false,
                     false,
                     true,
                     $"检测到校园网“{visibleCampus}”，正在切换连接",
+                    ssid
+                );
+            }
+            if (allowWifiSwitch && currentInternetAvailable)
+            {
+                return new LoginResult(
+                    true,
+                    true,
+                    false,
+                    $"当前网络“{ssid}”可正常上网，已跳过校园网切换",
                     ssid
                 );
             }
@@ -144,13 +173,16 @@ public sealed class CampusLoginClient
         );
 
         JsonDocument? status = null;
+        var statusError = "";
         try
         {
-            status = await GetJsonpAsync(
+            var statusFetch = await GetJsonpAsync(
                 client,
                 BuildStatusUrl(),
                 cancellationToken
             );
+            status = statusFetch.Document;
+            statusError = statusFetch.Error;
         }
         catch
         {
@@ -163,7 +195,9 @@ public sealed class CampusLoginClient
                 false,
                 false,
                 true,
-                "正在识别校园网连接，请保持 Wi-Fi 连接",
+                string.IsNullOrWhiteSpace(statusError)
+                    ? "正在识别校园网连接，请保持 Wi-Fi 连接"
+                    : "无法识别校园网：" + statusError,
                 ssid
             );
         }
@@ -202,24 +236,25 @@ public sealed class CampusLoginClient
                 false,
                 status == null,
                 status == null
-                    ? "校园门户不可达（只读检查）"
+                    ? $"校园门户不可达（{statusError}；只读检查）"
                     : "门户可达，当前为离线状态（只读检查）",
                 ssid
             );
         }
 
-        using var login = await GetJsonpAsync(
+        var loginFetch = await GetJsonpAsync(
             client,
             BuildLoginUrl(ip!, password, NetworkService.GetWifiMacAddress()),
             cancellationToken
         );
+        using var login = loginFetch.Document;
         if (login == null)
         {
             return new LoginResult(
                 false,
                 false,
                 true,
-                "校园门户暂时不可达，请稍后重试",
+                "校园门户请求失败：" + loginFetch.Error,
                 ssid
             );
         }
@@ -275,11 +310,12 @@ public sealed class CampusLoginClient
             if (cleanup.RemovedSessions > 0)
             {
                 await Task.Delay(1200, cancellationToken);
-                using var retry = await GetJsonpAsync(
+                var retryFetch = await GetJsonpAsync(
                     client,
                     BuildLoginUrl(ip!, password, deviceMac),
                     cancellationToken
                 );
+                using var retry = retryFetch.Document;
                 if (retry != null &&
                     (IsLoginSuccess(retry) ||
                      Text(retry, "ret_code") == "2"))
@@ -307,7 +343,9 @@ public sealed class CampusLoginClient
                         ssid
                     );
                 }
-                detail = cleanup.Message + "；重新登录仍未成功";
+                detail = cleanup.Message +
+                         "；重新登录请求失败：" +
+                         retryFetch.Error;
             }
             else
             {
@@ -370,11 +408,12 @@ public sealed class CampusLoginClient
                $"/eportal/portal/login?{encoded}";
     }
 
-    private static async Task<JsonDocument?> GetJsonpAsync(
+    private static async Task<(JsonDocument? Document, string Error)> GetJsonpAsync(
         HttpClient client,
         string url,
         CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -382,7 +421,15 @@ public sealed class CampusLoginClient
                 new Uri("http://" + new Uri(url).Host + "/a79.htm");
             using var response =
                 await client.SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                stopwatch.Stop();
+                return (
+                    null,
+                    $"HTTP {(int)response.StatusCode} " +
+                    $"{response.ReasonPhrase}，{stopwatch.ElapsedMilliseconds} ms"
+                );
+            }
             var text =
                 await response.Content.ReadAsStringAsync(cancellationToken);
             var start = text.IndexOf('(');
@@ -391,12 +438,69 @@ public sealed class CampusLoginClient
             {
                 text = text[(start + 1)..end];
             }
-            return JsonDocument.Parse(text);
+            stopwatch.Stop();
+            return (JsonDocument.Parse(text), "");
         }
-        catch
+        catch (OperationCanceledException)
         {
-            return null;
+            stopwatch.Stop();
+            return (
+                null,
+                $"请求超时，{stopwatch.ElapsedMilliseconds} ms"
+            );
         }
+        catch (JsonException)
+        {
+            stopwatch.Stop();
+            return (
+                null,
+                $"响应解析失败，{stopwatch.ElapsedMilliseconds} ms"
+            );
+        }
+        catch (HttpRequestException ex)
+        {
+            stopwatch.Stop();
+            return (
+                null,
+                $"{DescribeHttpFailure(ex)}，{stopwatch.ElapsedMilliseconds} ms"
+            );
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            return (
+                null,
+                $"{ex.GetType().Name}，{stopwatch.ElapsedMilliseconds} ms"
+            );
+        }
+    }
+
+    public static string DescribeHttpFailure(HttpRequestException exception)
+    {
+        if (exception.InnerException is SocketException socketException)
+        {
+            return socketException.SocketErrorCode switch
+            {
+                SocketError.HostNotFound => "DNS 解析失败",
+                SocketError.NoData => "DNS 无响应",
+                SocketError.TryAgain => "DNS 暂时失败",
+                SocketError.ConnectionRefused => "连接被拒绝",
+                SocketError.TimedOut => "TCP 连接超时",
+                SocketError.NetworkUnreachable => "网络不可达",
+                SocketError.HostUnreachable => "主机不可达",
+                SocketError.ConnectionReset => "连接被重置",
+                _ => "网络错误：" + socketException.SocketErrorCode
+            };
+        }
+        return exception.HttpRequestError switch
+        {
+            HttpRequestError.NameResolutionError => "DNS 解析失败",
+            HttpRequestError.ConnectionError => "连接失败",
+            HttpRequestError.SecureConnectionError => "TLS 连接失败",
+            HttpRequestError.HttpProtocolError => "HTTP 协议错误",
+            HttpRequestError.InvalidResponse => "响应无效",
+            _ => "网络请求失败：" + exception.HttpRequestError
+        };
     }
 
     private static string Text(JsonDocument document, string name)

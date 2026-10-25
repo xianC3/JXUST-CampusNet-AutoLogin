@@ -23,10 +23,12 @@ public sealed class MainForm : Form
     private readonly Label _listLabel;
     private readonly Label _diagnosticsLabel;
     private readonly CheckBox _autoCheck;
+    private readonly CheckBox _switchCheck;
     private readonly Button _checkButton;
     private bool _checking;
     private bool _exitRequested;
     private string _lastStatus = "等待检查";
+    private DateTime _lastCheckStartedUtc = DateTime.MinValue;
 
     public MainForm(bool startHidden)
     {
@@ -58,7 +60,7 @@ public sealed class MainForm : Form
         _wifiLabel = CreateLabel("当前 Wi-Fi：正在读取", 7.5f, FontStyle.Regular, TextPrimary);
         _listLabel = CreateLabel("校园网名单：正在读取", 7.5f, FontStyle.Regular, TextSecondary);
         _diagnosticsLabel = CreateLabel("", 7f, FontStyle.Regular, TextSecondary);
-        _diagnosticsLabel.Height = 40;
+        _diagnosticsLabel.Height = 52;
 
         var root = new TableLayoutPanel
         {
@@ -90,7 +92,7 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = 8,
             Padding = new Padding(18, 12, 18, 12),
             BackColor = Page
         };
@@ -99,6 +101,7 @@ public sealed class MainForm : Form
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 66f));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 8f));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42f));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36f));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 36f));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
@@ -132,7 +135,7 @@ public sealed class MainForm : Form
             Padding = new Padding(0)
         };
         _checkButton = CreateButton("立即登录", Brand, Color.White);
-        _checkButton.Click += async (_, _) => await CheckNowAsync();
+        _checkButton.Click += async (_, _) => await CheckNowAsync(force: true);
         var addButton = CreateButton("添加当前 Wi-Fi", Color.White, TextPrimary, true);
         addButton.Click += (_, _) => AddCurrentSsid();
         var manageButton = CreateButton("管理名单", Color.White, TextPrimary, true);
@@ -159,6 +162,23 @@ public sealed class MainForm : Form
         };
         content.Controls.Add(_autoCheck, 0, 5);
 
+        _switchCheck = new CheckBox
+        {
+            Text = "仅当当前网络不可上网时，允许自动切换到可见校园网",
+            Checked = _settings.AutoSwitchWifiEnabled,
+            AutoSize = true,
+            Font = new Font("Microsoft YaHei UI", 7.5f),
+            ForeColor = TextPrimary,
+            Padding = new Padding(3, 6, 0, 0)
+        };
+        _switchCheck.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoSwitchWifiEnabled = _switchCheck.Checked;
+            SettingsStore.Save(_settings);
+            RefreshUi();
+        };
+        content.Controls.Add(_switchCheck, 0, 6);
+
         var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
         bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 42f));
         bottom.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
@@ -173,7 +193,7 @@ public sealed class MainForm : Form
         bottom.Controls.Add(links, 0, 1);
         bottom.SetColumnSpan(_diagnosticsLabel, 2);
         bottom.SetColumnSpan(links, 2);
-        content.Controls.Add(bottom, 0, 6);
+        content.Controls.Add(bottom, 0, 7);
 
         root.Controls.Add(content, 0, 1);
         Controls.Add(root);
@@ -192,7 +212,7 @@ public sealed class MainForm : Form
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开管理界面", null, (_, _) => ShowFromTray());
-        menu.Items.Add("立即检查", null, async (_, _) => await CheckNowAsync());
+        menu.Items.Add("立即检查", null, async (_, _) => await CheckNowAsync(force: true));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => ExitApplication());
         _tray = new NotifyIcon
@@ -245,12 +265,22 @@ public sealed class MainForm : Form
         await CheckNowAsync();
     }
 
-    private async Task CheckNowAsync()
+    private async Task CheckNowAsync(bool force = false)
     {
         if (_checking)
         {
             return;
         }
+        var nowUtc = DateTime.UtcNow;
+        if (!CheckThrottlePolicy.ShouldRun(
+                _lastCheckStartedUtc,
+                nowUtc,
+                force,
+                TimeSpan.FromSeconds(3)))
+        {
+            return;
+        }
+        _lastCheckStartedUtc = nowUtc;
         if (!HasCredentials())
         {
             SetStatus("尚未设置账号", "请先填写校园网账号和密码", TextSecondary);
@@ -271,7 +301,10 @@ public sealed class MainForm : Form
         SetStatus("正在检查...", "正在识别当前网络并检查校园网状态", Brand);
         try
         {
-            var result = await _client.CheckAndLoginAsync(password);
+            var result = await _client.CheckAndLoginAsync(
+                password,
+                allowWifiSwitch: _settings.AutoSwitchWifiEnabled
+            );
             _lastStatus = result.Message;
             SettingsStore.Log(
                 $"{(result.Success ? "OK" : (result.Retry ? "WAIT" : "ERROR"))} {result.Message}"
@@ -375,6 +408,7 @@ public sealed class MainForm : Form
             ? "校园网名单：（空）"
             : "校园网名单：" + string.Join("、", _settings.CampusSsids);
         _autoCheck.Checked = _settings.AutoLoginEnabled;
+        _switchCheck.Checked = _settings.AutoSwitchWifiEnabled;
 
         var location = NetworkService.IsOnWifi() ? "Wi-Fi 已连接" : "未检测到 Wi-Fi";
         var provider = ProviderCatalog.FindBySuffix(_settings.ProviderSuffix).Name;
@@ -382,7 +416,9 @@ public sealed class MainForm : Form
         _diagnosticsLabel.Text =
             $"兼容性检查：{location}｜{account}｜" +
             $"自动检查每 5 分钟一次｜开机启动 " +
-            (_settings.AutoLoginEnabled ? "已开启" : "已关闭");
+            (_settings.AutoLoginEnabled ? "已开启" : "已关闭") +
+            "｜校园网切换 " +
+            (_settings.AutoSwitchWifiEnabled ? "已开启" : "已关闭");
     }
 
     private bool HasCredentials()
